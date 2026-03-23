@@ -13,6 +13,7 @@ import {
   LoaderCircle,
   PlayCircle,
   QrCode,
+  Share2,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -32,6 +33,12 @@ import {
 const HISTORY_KEY = "qr-studio-history";
 const MAX_HISTORY_ITEMS = 18;
 const SCAN_COOLDOWN_MS = 3000;
+const QUICK_SHARE_TARGETS = [
+  { id: "telegram", label: "Telegram" },
+  { id: "whatsapp", label: "WhatsApp" },
+  { id: "x", label: "X" },
+  { id: "vk", label: "VK" },
+] as const;
 
 const tabs = [
   { id: "scan", label: "Scan", icon: Camera },
@@ -46,6 +53,8 @@ type ScannerInstance = {
   stop: () => Promise<void>;
   clear: () => void | Promise<void>;
 };
+
+type QuickShareTarget = (typeof QUICK_SHARE_TARGETS)[number]["id"];
 
 const generatorModes: Array<{
   id: GeneratorMode;
@@ -278,6 +287,7 @@ export default function QrStudio() {
   const [scannerBusy, setScannerBusy] = useState(false);
   const [scannerActive, setScannerActive] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "scan" | "create">("idle");
+  const [shareState, setShareState] = useState<"idle" | "sharing" | "done" | "unsupported">("idle");
 
   useEffect(() => {
     const saved = localStorage.getItem(HISTORY_KEY);
@@ -431,6 +441,92 @@ export default function QrStudio() {
     await navigator.clipboard.writeText(value);
     setCopyState(kind);
     window.setTimeout(() => setCopyState("idle"), 1500);
+  }
+
+  function buildShareText() {
+    const normalizedTitle = title.trim() || "QR Studio code";
+
+    if (!generatedDescriptor) {
+      return normalizedTitle;
+    }
+
+    return `${normalizedTitle}\n${generatedDescriptor.rawValue}`;
+  }
+
+  function buildShareUrl() {
+    if (generatedDescriptor?.url && assessUrlSafety(generatedDescriptor.url).safe) {
+      return generatedDescriptor.url;
+    }
+
+    if (typeof window !== "undefined") {
+      return window.location.href;
+    }
+
+    return "";
+  }
+
+  async function createShareFile() {
+    if (!generatedUrl) {
+      return null;
+    }
+
+    const response = await fetch(generatedUrl);
+    const blob = await response.blob();
+    const filename = `${(title || "qr-code").trim().toLowerCase().replace(/\s+/g, "-") || "qr-code"}.png`;
+    return new File([blob], filename, { type: "image/png" });
+  }
+
+  async function shareGeneratedQr() {
+    if (!generatedUrl || !generatedDescriptor || typeof navigator === "undefined" || !navigator.share) {
+      setShareState("unsupported");
+      return;
+    }
+
+    setShareState("sharing");
+
+    try {
+      const shareFile = await createShareFile();
+      const shareData = {
+        title: title.trim() || "QR Studio code",
+        text: buildShareText(),
+        url: buildShareUrl() || undefined,
+      };
+
+      if (shareFile && navigator.canShare?.({ files: [shareFile] })) {
+        await navigator.share({
+          ...shareData,
+          files: [shareFile],
+        });
+      } else {
+        await navigator.share(shareData);
+      }
+
+      setShareState("done");
+      window.setTimeout(() => setShareState("idle"), 1800);
+    } catch {
+      setShareState("idle");
+    }
+  }
+
+  function openQuickShare(target: QuickShareTarget) {
+    if (!generatedDescriptor) {
+      return;
+    }
+
+    const shareText = buildShareText();
+    const shareUrl = buildShareUrl();
+    const encodedText = encodeURIComponent(shareText);
+    const encodedUrl = encodeURIComponent(shareUrl);
+    const targetUrl =
+      target === "telegram"
+        ? `https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`
+        : target === "whatsapp"
+          ? `https://wa.me/?text=${encodeURIComponent(shareUrl ? `${shareText}\n${shareUrl}` : shareText)}`
+          : target === "x"
+            ? `https://twitter.com/intent/tweet?text=${encodedText}&url=${encodedUrl}`
+            : `https://vk.com/share.php?url=${encodedUrl}&title=${encodeURIComponent(title.trim() || "QR Studio code")}`;
+
+    window.open(targetUrl, "_blank", "noopener,noreferrer");
   }
 
   function downloadGeneratedQr() {
@@ -636,7 +732,38 @@ export default function QrStudio() {
                       {copyState === "create" ? "Copied" : "Copy payload"}
                     </button>
                   ) : null}
+                  {generatedDescriptor ? (
+                    <button
+                      type="button"
+                      onClick={() => void shareGeneratedQr()}
+                      className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/8 px-5 py-3 text-sm font-medium text-white transition hover:bg-white/14"
+                    >
+                      <Share2 className="h-4 w-4" />
+                      {shareState === "sharing"
+                        ? "Sharing..."
+                        : shareState === "done"
+                          ? "Shared"
+                          : shareState === "unsupported"
+                            ? "Share unavailable"
+                            : "Share"}
+                    </button>
+                  ) : null}
                 </div>
+
+                {generatedDescriptor ? (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {QUICK_SHARE_TARGETS.map((target) => (
+                      <button
+                        key={target.id}
+                        type="button"
+                        onClick={() => openQuickShare(target.id)}
+                        className="rounded-full border border-white/10 bg-slate-950/28 px-4 py-2 text-sm text-white/82 transition hover:bg-white/10"
+                      >
+                        {target.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </section>
             ) : null}
 
