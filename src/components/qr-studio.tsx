@@ -31,6 +31,7 @@ import {
 
 const HISTORY_KEY = "qr-studio-history";
 const MAX_HISTORY_ITEMS = 18;
+const SCAN_COOLDOWN_MS = 3000;
 
 const tabs = [
   { id: "scan", label: "Scan", icon: Camera },
@@ -263,6 +264,7 @@ function InfoPanel({ showVideoHint }: { showVideoHint: boolean }) {
 export default function QrStudio() {
   const scannerRef = useRef<HTMLDivElement | null>(null);
   const scannerInstanceRef = useRef<ScannerInstance | null>(null);
+  const lastScanRef = useRef<{ value: string; capturedAt: number } | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("scan");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [generatorMode, setGeneratorMode] = useState<GeneratorMode>("text");
@@ -272,6 +274,7 @@ export default function QrStudio() {
   const [generatedPayload, setGeneratedPayload] = useState("");
   const [scanResult, setScanResult] = useState<PayloadDescriptor | null>(null);
   const [scanStatus, setScanStatus] = useState("Camera is idle. Start scanning when you are ready.");
+  const [scanCapturedAt, setScanCapturedAt] = useState("");
   const [scannerBusy, setScannerBusy] = useState(false);
   const [scannerActive, setScannerActive] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "scan" | "create">("idle");
@@ -328,6 +331,7 @@ export default function QrStudio() {
     }
 
     setScannerBusy(true);
+    setScanCapturedAt("");
     setScanStatus("Requesting camera access and preparing the scanner...");
 
     try {
@@ -343,15 +347,40 @@ export default function QrStudio() {
           aspectRatio: 1,
         },
         async (decodedText) => {
-          const descriptor = describePayload(decodedText);
+          const normalizedText = decodedText.trim();
+          const now = Date.now();
+
+          if (
+            lastScanRef.current &&
+            lastScanRef.current.value === normalizedText &&
+            now - lastScanRef.current.capturedAt < SCAN_COOLDOWN_MS
+          ) {
+            return;
+          }
+
+          lastScanRef.current = {
+            value: normalizedText,
+            capturedAt: now,
+          };
+
+          const descriptor = describePayload(normalizedText);
           setScanResult(descriptor);
-          setScanStatus("QR code captured. You can keep scanning or pause the camera.");
+          setScanCapturedAt(
+            new Date(now).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            }),
+          );
+          setScanStatus("QR code captured. Camera paused to avoid duplicate scans.");
 
           setHistory((current) => {
-            const next = [makeHistoryEntry("scanned", decodedText), ...current].slice(0, MAX_HISTORY_ITEMS);
+            const next = [makeHistoryEntry("scanned", normalizedText), ...current].slice(0, MAX_HISTORY_ITEMS);
             persistHistory(next);
             return next;
           });
+
+          await stopScanner();
         },
         () => undefined,
       );
@@ -480,7 +509,7 @@ export default function QrStudio() {
                       className="inline-flex items-center gap-2 rounded-full bg-cyan-300 px-5 py-3 text-sm font-medium text-slate-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-white/40"
                     >
                       {scannerBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
-                      Start camera
+                      {scanResult && !scannerActive ? "Scan again" : "Start camera"}
                     </button>
                     <button
                       type="button"
@@ -503,6 +532,12 @@ export default function QrStudio() {
                 </div>
 
                 <p className="mt-4 text-sm leading-7 text-white/65">{scanStatus}</p>
+                {scanCapturedAt ? (
+                  <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-emerald-300/20 bg-emerald-300/12 px-4 py-2 text-sm text-emerald-100">
+                    <ShieldCheck className="h-4 w-4" />
+                    Captured at {scanCapturedAt}
+                  </div>
+                ) : null}
               </section>
             ) : null}
 
